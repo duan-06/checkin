@@ -1,10 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { glados, main } from './main.js'
 
 const response = (body, status = 200) => new Response(JSON.stringify(body), { status })
 
 test('checkin reports real outcomes without hiding failures', async (t) => {
+  const log = t.mock.method(console, 'log', () => {})
   const originalFetch = globalThis.fetch
   const originalEnv = { ...process.env }
   t.after(() => {
@@ -25,7 +27,7 @@ test('checkin reports real outcomes without hiding failures', async (t) => {
   })
   await t.test('expired Cookie makes the job fail before status lookup', async () => {
     let calls = 0
-    globalThis.fetch = async () => { calls++; return response({ code: 1, message: 'Please login' }) }
+    globalThis.fetch = async () => { calls++; return response({ code: -2, message: '没有权限' }) }
     assert.equal(await main(), 1)
     assert.equal(calls, 1)
   })
@@ -61,5 +63,21 @@ test('checkin reports real outcomes without hiding failures', async (t) => {
       ? response({ code: 0, message: 'OK' })
       : response({ code: 0, data: {} })
     assert.equal(await main(), 1)
+  })
+  await t.test('credentials are redacted from API messages', async () => {
+    globalThis.fetch = async () => response({ code: -2, message: 'Rejected session=test-cookie-value' })
+    assert.equal(await main(), 1)
+    const output = log.mock.calls.map((call) => call.arguments.join(' ')).join('\n')
+    assert.ok(output.includes('[REDACTED]'))
+    assert.ok(!output.includes('test-cookie-value'))
+  })
+  await t.test('the CLI exits nonzero when a Cookie is missing', async () => {
+    const env = { ...process.env }
+    delete env.GLADOS
+    delete env.NOTIFY
+    delete env.GITHUB_STEP_SUMMARY
+    const result = spawnSync(process.execPath, ['main.js'], { env, encoding: 'utf8', cwd: new URL('.', import.meta.url) })
+    assert.equal(result.status, 1)
+    assert.match(result.stdout, /Missing GLADOS Secret/)
   })
 })
